@@ -1398,7 +1398,10 @@ function boot(){
 }
 document.getElementById('chatIn').addEventListener('keypress',e=>{if(e.key==='Enter')coachSend();});
 
-/* Versione single-file: nessun service worker esterno. */
+/* Service worker: abilita installazione e uso offline sull'iPhone */
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{});});
+}
 boot();
 </script>
 </body>
