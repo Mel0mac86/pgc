@@ -232,6 +232,9 @@ textarea{resize:vertical;min-height:64px;line-height:1.5}
     <!-- SHOPPING -->
     <div class="screen" id="sc-shop"></div>
 
+    <!-- DIARIO -->
+    <div class="screen" id="sc-diario"></div>
+
     <!-- RECIPES -->
     <div class="screen" id="sc-recipes"></div>
 
@@ -241,6 +244,7 @@ textarea{resize:vertical;min-height:64px;line-height:1.5}
 
   <div class="nav" id="nav" style="display:none">
     <button data-sc="menu" onclick="go('menu')"><span class="ic">📅</span>Menù</button>
+    <button data-sc="diario" onclick="go('diario')"><span class="ic">📔</span>Diario</button>
     <button data-sc="coach" onclick="go('coach')"><span class="ic">🤖</span>Coach</button>
     <button data-sc="shop" onclick="go('shop')"><span class="ic">🛒</span>Spesa</button>
     <button data-sc="recipes" onclick="go('recipes')"><span class="ic">📖</span>Ricette</button>
@@ -379,6 +383,7 @@ function go(sc){
   document.getElementById('content')&&document.querySelector('.content').scrollTo(0,0);
   if(sc==='menu')renderMenu();
   if(sc==='shop')renderShop();
+  if(sc==='diario')renderDiario();
   if(sc==='recipes')renderRecipes();
   if(sc==='settings')renderSettings();
 }
@@ -400,7 +405,7 @@ function startOnboarding(existing){
     specialDays:[],
     meals:4, mealNames:[],
     cheat:{enabled:false, day:5, mealIndex:1, desc:'', p:40,c:80,f:30},
-    allergies:'', dislikes:''
+    allergies:'', dislikes:'', aiEnabled:false
   };
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById('sc-onboarding').classList.add('active');
@@ -852,8 +857,9 @@ function renderMenu(){
       }
     });
     h+=`<div class="meal-foot">
-        <button onclick="addFood(${curDay},${mi})">＋ Aggiungi alimento</button>
-        ${!meal.cheat?`<button onclick="regenMeal(${curDay},${mi})">🔄 Rigenera pasto</button>`:''}
+        <button onclick="logMeal(${curDay},${mi})">✓ Mangiato</button>
+        <button onclick="addFood(${curDay},${mi})">＋ Alimento</button>
+        ${!meal.cheat?`<button onclick="regenMeal(${curDay},${mi})">🔄 Rigenera</button>`:''}
       </div></div>`;
   });
 
@@ -1222,6 +1228,199 @@ function renderRecipes(){
 function emptyState(e,t,p){return `<div class="empty"><div class="ee">${e}</div><h3>${t}</h3><p>${p}</p></div>`;}
 
 /* ============================================================
+   DIARIO ALIMENTARE + PESO
+   ============================================================ */
+let diarySel=todayKey();        // data selezionata nel diario (YYYY-MM-DD)
+
+function diaryAll(){try{return JSON.parse(localStorage.getItem('macroai_diary'))||{}}catch(e){return {}}}
+function diarySave(d){localStorage.setItem('macroai_diary',JSON.stringify(d))}
+function diaryGet(k){return diaryAll()[k]||{entries:[]}}
+function diaryAddEntry(k,entry){const all=diaryAll();(all[k]=all[k]||{entries:[]}).entries.push(entry);diarySave(all);}
+function diaryRemove(k,i){const all=diaryAll();if(all[k]){all[k].entries.splice(i,1);diarySave(all);}renderDiario();}
+
+function weightAll(){try{return JSON.parse(localStorage.getItem('macroai_weight'))||{}}catch(e){return {}}}
+function weightSave(w){localStorage.setItem('macroai_weight',JSON.stringify(w))}
+function weightGet(k){return weightAll()[k]||null}
+function setWeight(k,v){const w=weightAll();if(v>0)w[k]=v;else delete w[k];weightSave(w);renderDiario();}
+
+// lunedì della settimana che contiene la data k
+function mondayOf(k){const d=new Date(k+'T12:00:00');const off=(d.getDay()+6)%7;d.setDate(d.getDate()-off);return d;}
+function fmtKey(d){return d.toISOString().slice(0,10);}
+function fmtIt(k){const d=new Date(k+'T12:00:00');return DAYS[(d.getDay()+6)%7]+' '+d.getDate()+'/'+(d.getMonth()+1);}
+// media peso della settimana (Lun-Dom) che contiene k
+function weeklyWeight(k){const mon=mondayOf(k);const W=weightAll();let vals=[];for(let i=0;i<7;i++){const dk=fmtKey(new Date(mon.getFullYear(),mon.getMonth(),mon.getDate()+i));if(W[dk]!=null)vals.push(W[dk]);}
+  if(!vals.length)return null;return {avg:+(vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(1),n:vals.length,first:vals[0],last:vals[vals.length-1]};}
+
+function diaryTotals(k){let t={k:0,p:0,c:0,f:0};diaryGet(k).entries.forEach(e=>{t.k+=e.k;t.p+=e.p;t.c+=e.c;t.f+=e.f;});return {k:Math.round(t.k),p:Math.round(t.p),c:Math.round(t.c),f:Math.round(t.f)};}
+
+// segna un pasto del menù come mangiato (lo copia nel diario di oggi)
+// serie peso ordinata per data: [{k, v}]
+function weightSeries(){
+  const W=weightAll();
+  return Object.keys(W).sort().map(k=>({k,v:W[k]}));
+}
+// grafico andamento peso (SVG, ultimi 30 punti) — nessuna libreria, funziona offline
+function weightChart(){
+  const all=weightSeries();
+  if(all.length<2) return `<div class="note" style="margin-top:10px">📈 Aggiungi almeno <b>2 pesate</b> in giorni diversi per vedere il grafico dell’andamento.</div>`;
+  const s=all.slice(-30);
+  const W=320, H=150, padL=34, padR=10, padT=14, padB=24;
+  const vs=s.map(p=>p.v);
+  let min=Math.min(...vs), max=Math.max(...vs);
+  if(max-min<1){min-=0.5;max+=0.5;} // evita linea piatta
+  const dates=s.map(p=>new Date(p.k+'T12:00:00').getTime());
+  const t0=dates[0], t1=dates[dates.length-1], span=Math.max(1,t1-t0);
+  const X=t=>padL+(t-t0)/span*(W-padL-padR);
+  const Y=v=>padT+(max-v)/(max-min)*(H-padT-padB);
+  const pts=s.map((p,i)=>({x:X(dates[i]),y:Y(p.v),v:p.v}));
+  const line=pts.map((p,i)=>(i?'L':'M')+p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' ');
+  const area=`M${pts[0].x.toFixed(1)} ${(H-padB)} `+pts.map(p=>'L'+p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' ')+` L${pts[pts.length-1].x.toFixed(1)} ${(H-padB)} Z`;
+  const yMid=(min+max)/2;
+  const gl=v=>`<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${W-padR}" y2="${Y(v).toFixed(1)}" stroke="#262626" stroke-width="1"/><text x="${padL-5}" y="${(Y(v)+3).toFixed(1)}" fill="#8a8a8a" font-size="9" text-anchor="end">${v.toFixed(1)}</text>`;
+  const dots=pts.map(p=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.6" fill="#34d399"/>`).join('');
+  const fmtD=t=>{const d=new Date(t);return d.getDate()+'/'+(d.getMonth()+1);};
+  const trend=s[s.length-1].v-s[0].v;
+  const trendC=trend<0?'var(--accent)':trend>0?'var(--danger)':'var(--muted)';
+  return `<div style="margin-top:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="font-size:12px;color:var(--muted);font-weight:600">📈 Andamento (${s.length} pesate)</span>
+      <span style="font-size:12px;font-weight:700;color:${trendC}">${trend>=0?'+':''}${trend.toFixed(1)} kg</span>
+    </div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;background:var(--card2);border-radius:12px">
+      <defs><linearGradient id="wgrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#34d399" stop-opacity="0.35"/><stop offset="100%" stop-color="#34d399" stop-opacity="0"/></linearGradient></defs>
+      ${gl(max)}${gl(yMid)}${gl(min)}
+      <path d="${area}" fill="url(#wgrad)"/>
+      <path d="${line}" fill="none" stroke="#34d399" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${dots}
+      <text x="${padL}" y="${H-7}" fill="#8a8a8a" font-size="9" text-anchor="start">${fmtD(t0)}</text>
+      <text x="${W-padR}" y="${H-7}" fill="#8a8a8a" font-size="9" text-anchor="end">${fmtD(t1)}</text>
+    </svg></div>`;
+}
+
+function logMeal(d,mi){
+  const meal=MENU.days[d].meals[mi];const k=todayKey();
+  meal.foods.forEach(it=>{const m=foodMacros(it);
+    const name=it.food==='__cheat__'?(it.label||'Pasto libero'):it.food;
+    const qty=it.food==='__cheat__'?'':(it.g+' g');
+    diaryAddEntry(k,{name,qty,k:m.k,p:m.p,c:m.c,f:m.f});});
+  diarySel=k;toast('Aggiunto al diario di oggi ✓');
+}
+
+function renderDiario(){
+  const k=diarySel;
+  const wd=(new Date(k+'T12:00:00').getDay()+6)%7;
+  const tgt=(S&&MENU)?dayTarget(wd):{p:0,c:0,f:0,label:''};
+  const got=diaryTotals(k);
+  const isToday=k===todayKey();
+  const wk=weeklyWeight(k);
+  const todW=weightGet(k);
+
+  let h=`<div class="daytitle"><h2>📔 Diario</h2></div>`;
+  // navigatore data
+  h+=`<div class="row" style="align-items:center;margin-bottom:14px;gap:8px">
+      <button class="btn sec sm" style="flex:0 0 auto;padding:11px 15px" onclick="diaryShift(-1)">‹</button>
+      <div style="flex:1;text-align:center;font-weight:700;font-size:15px">${isToday?'Oggi · ':''}${fmtIt(k)}</div>
+      <button class="btn sec sm" style="flex:0 0 auto;padding:11px 15px" onclick="diaryShift(1)" ${isToday?'disabled style="opacity:.4;flex:0 0 auto;padding:11px 15px"':''}>›</button>
+    </div>`;
+
+  // consumato vs obiettivo
+  h+=`<div class="tgt">
+    <div class="tgt-h"><span class="tt">Consumato oggi</span><span class="tt" style="color:var(--cal);font-weight:700">${got.k} / ${kcalFromMacros(tgt.p,tgt.c,tgt.f)} kcal</span></div>
+    ${macroBar('Proteine',got.p,tgt.p,'var(--pro)')}
+    ${macroBar('Carboidrati',got.c,tgt.c,'var(--car)')}
+    ${macroBar('Grassi',got.f,tgt.f,'var(--fat)')}
+    <div class="barlabel" style="margin-top:10px;color:var(--muted)"><span>Rimanenti</span>
+      <b>P ${Math.max(0,tgt.p-got.p)} · C ${Math.max(0,tgt.c-got.c)} · G ${Math.max(0,tgt.f-got.f)} g</b></div>
+  </div>`;
+
+  // peso
+  h+=`<div class="card"><h2>⚖️ Peso</h2>
+    <div class="sub">Segna il peso del giorno (kg). La media settimanale si calcola da sola.</div>
+    <div class="row" style="gap:8px;align-items:center">
+      <input type="number" step="0.1" id="di_w" value="${todW!=null?todW:''}" placeholder="es. 74.5" style="flex:1">
+      <button class="btn sm" style="padding:13px 16px" onclick="setWeight('${k}',+document.getElementById('di_w').value)">Salva</button>
+    </div>
+    <div class="macro-row" style="margin-top:12px">
+      <div class="mp"><div class="v" style="color:var(--accent2)">${todW!=null?todW:'—'}</div><div class="l">Oggi (kg)</div></div>
+      <div class="mp"><div class="v" style="color:var(--accent)">${wk?wk.avg:'—'}</div><div class="l">Media sett.</div></div>
+      <div class="mp"><div class="v">${wk?wk.n:0}</div><div class="l">Pesate</div></div>
+      <div class="mp"><div class="v" style="color:${wk&&wk.last<wk.first?'var(--accent)':wk&&wk.last>wk.first?'var(--danger)':'var(--txt)'}">${wk&&wk.n>1?((wk.last-wk.first>=0?'+':'')+ (wk.last-wk.first).toFixed(1)):'—'}</div><div class="l">Δ settimana</div></div>
+    </div>
+    ${wk?`<div class="note" style="margin-top:10px">📅 Media settimana (Lun–Dom): <b>${wk.avg} kg</b> su ${wk.n} pesat${wk.n===1?'a':'e'}.</div>`:`<div class="note" style="margin-top:10px">Aggiungi le pesate dei vari giorni: a fine settimana vedrai qui la <b>media settimanale</b>.</div>`}
+    ${weightChart()}
+  </div>`;
+
+  // voci registrate
+  const entries=diaryGet(k).entries;
+  h+=`<div class="cat-h">Cosa hai mangiato</div>`;
+  if(!entries.length){
+    h+=`<div class="note">Nessuna voce. Aggiungi un alimento qui sotto, oppure tocca <b>✓ Mangiato</b> su un pasto nella scheda Menù.</div>`;
+  } else {
+    entries.forEach((e,i)=>{
+      h+=`<div class="food" style="border:1px solid var(--line);border-radius:12px;margin-bottom:8px;border-top:1px solid var(--line)">
+        <div class="fi"><div class="fn">${e.name}</div>
+          ${e.qty?`<div class="fg">${e.qty}</div>`:''}
+          <div class="fmac"><span class="k">${e.k}kcal</span><span class="p">P ${e.p}</span><span class="c">C ${e.c}</span><span class="f">G ${e.f}</span></div></div>
+        <button class="fedit" onclick="diaryRemove('${k}',${i})">🗑️</button></div>`;
+    });
+  }
+  h+=`<div class="row" style="margin:12px 0 24px">
+      <button class="btn" onclick="diaryAddFood()">＋ Aggiungi alimento</button>
+      <button class="btn sec" onclick="diaryQuickAdd()">✏️ Voce rapida</button>
+    </div>`;
+
+  document.getElementById('sc-diario').innerHTML=h;
+}
+function diaryShift(delta){
+  const d=new Date(diarySel+'T12:00:00');d.setDate(d.getDate()+delta);
+  const nk=fmtKey(d);
+  if(nk>todayKey())return; // non oltre oggi
+  diarySel=nk;renderDiario();
+}
+function diaryAddFood(){
+  let h=`<h3>Aggiungi al diario</h3><div class="msub">Cerca un alimento e indica i grammi consumati</div>
+    <label class="fld"><input type="text" id="dia_search" placeholder="Cerca alimento…" oninput="diaSearch(this.value)" autofocus></label>
+    <div id="dia_results"></div>`;
+  openModal(h);diaSearch('');
+}
+function diaSearch(q){
+  q=q.trim().toLowerCase();
+  let res=q.length<1?DB.slice(0,40):DB.filter(f=>f.n.toLowerCase().includes(q));
+  res=res.slice(0,30);
+  document.getElementById('dia_results').innerHTML='<div class="altlist">'+res.map(a=>`<div class="alt"><div><div class="an">${a.n}</div><div class="am">${a.k}kcal/100g · P${a.p} C${a.c} G${a.f}</div></div>
+    <button onclick="diaPick('${a.n.replace(/'/g,"\\'")}')">＋</button></div>`).join('')+'</div>';
+}
+function diaPick(name){
+  const ff=findFood(name);
+  const def=ff.cat==='fat'&&ff.f>=90?10:ff.cat==='veg'?150:100;
+  openModal(`<h3>${name}</h3><div class="msub">${ff.k} kcal · P${ff.p} C${ff.c} G${ff.f} per 100 g</div>
+    <label class="fld"><span class="lab">Grammi consumati</span><input type="number" id="dia_g" value="${def}" autofocus></label>
+    <button class="btn" onclick="diaConfirm('${name.replace(/'/g,"\\'")}')">Aggiungi al diario</button>`);
+}
+function diaConfirm(name){
+  const g=+document.getElementById('dia_g').value||0;const ff=findFood(name);
+  diaryAddEntry(diarySel,{name,qty:g+' g',k:Math.round(ff.k*g/100),p:+(ff.p*g/100).toFixed(1),c:+(ff.c*g/100).toFixed(1),f:+(ff.f*g/100).toFixed(1)});
+  closeModal();renderDiario();toast('Aggiunto al diario ✓');
+}
+function diaryQuickAdd(){
+  openModal(`<h3>Voce rapida</h3><div class="msub">Per pasti fuori o cibi non in lista. Le kcal le calcolo dai macro.</div>
+    <label class="fld"><span class="lab">Nome</span><input type="text" id="qa_n" placeholder="es. Cornetto al bar"></label>
+    <div class="row" style="gap:8px">
+      <label class="fld" style="flex:1"><span class="lab" style="color:var(--pro)">Pro</span><input type="number" id="qa_p" value="0"></label>
+      <label class="fld" style="flex:1"><span class="lab" style="color:var(--car)">Carbo</span><input type="number" id="qa_c" value="0"></label>
+      <label class="fld" style="flex:1"><span class="lab" style="color:var(--fat)">Grassi</span><input type="number" id="qa_f" value="0"></label>
+    </div>
+    <button class="btn" onclick="qaConfirm()">Aggiungi al diario</button>`);
+}
+function qaConfirm(){
+  const n=document.getElementById('qa_n').value.trim()||'Voce';
+  const p=+document.getElementById('qa_p').value||0,c=+document.getElementById('qa_c').value||0,f=+document.getElementById('qa_f').value||0;
+  diaryAddEntry(diarySel,{name:n,qty:'',k:kcalFromMacros(p,c,f),p,c,f});
+  closeModal();renderDiario();toast('Voce aggiunta ✓');
+}
+
+/* ============================================================
    AI COACH  (interprete comandi in linguaggio naturale)
    ============================================================ */
 let chatHist=[];
@@ -1233,15 +1432,71 @@ function initCoach(first){
   renderQuick();
 }
 function renderQuick(){
-  const qs=['Rigenera la settimana','Lista della spesa','Ricette friggitrice ad aria','Rigenera oggi','Scarica il menù','Più proteine'];
+  const qs=['Rigenera la settimana','Apri il diario','Lista della spesa','Ricette friggitrice ad aria','Segna il mio peso','Scarica il menù'];
   document.getElementById('quick').innerHTML=qs.map(q=>`<button onclick="coachQuick('${q.replace(/'/g,"\\'")}')">${q}</button>`).join('');
 }
 function pushMsg(role,txt){chatHist.push({role,txt});const m=document.getElementById('msgs');const d=document.createElement('div');d.className='msg '+role;d.innerHTML=txt;m.appendChild(d);m.scrollTop=m.scrollHeight;}
 function coachQuick(q){document.getElementById('chatIn').value=q;coachSend();}
-function coachSend(){
+async function coachSend(){
   const inp=document.getElementById('chatIn');const t=inp.value.trim();if(!t)return;
   pushMsg('user',t);inp.value='';
-  setTimeout(()=>{const r=coachReply(t);pushMsg('ai',r);},350);
+  // 1) prova il coach locale (comandi app + conoscenze base) — istantaneo e offline
+  const local=coachReply(t);
+  if(local!==null){ setTimeout(()=>pushMsg('ai',local),250); return; }
+  // 2) domanda generica: usa l'AI avanzata se attiva, altrimenti fallback
+  const key=localStorage.getItem('macroai_key');
+  if(S.aiEnabled && key){
+    const id=showTyping();
+    const ans=await askClaude(t,key);
+    removeTyping(id);
+    pushMsg('ai',ans);
+  } else {
+    setTimeout(()=>pushMsg('ai','Non sono sicuro di aver capito 🤔. Posso rigenerare pasti/giorni/settimana, cambiare alimenti, gestire allergie e cibi non graditi, fare la lista della spesa, le ricette (anche friggitrice ad aria), il diario e il peso — e rispondere a domande di nutrizione.\n\n💡 Vuoi che risponda a <b>qualsiasi</b> domanda in linguaggio libero? Attiva l’<b>AI avanzata</b> nelle Impostazioni ⚙️ inserendo la tua chiave API.'),250);
+  }
+}
+function showTyping(){const m=document.getElementById('msgs');const d=document.createElement('div');d.className='msg ai';d.id='typing'+Date.now();d.innerHTML='<span class="spin"></span> sto pensando…';m.appendChild(d);m.scrollTop=m.scrollHeight;return d.id;}
+function removeTyping(id){const e=document.getElementById(id);if(e)e.remove();}
+
+// chiama l'API di Claude (modalità avanzata opzionale, richiede internet + chiave dell'utente)
+async function askClaude(t,key){
+  const sys=coachSystemPrompt();
+  // storico: ultimi messaggi, ripuliti dall'HTML
+  const hist=chatHist.slice(-11,-1).map(m=>({role:m.role==='user'?'user':'assistant',
+    content:String(m.txt).replace(/<[^>]+>/g,'').trim()})).filter(m=>m.content);
+  hist.push({role:'user',content:t});
+  try{
+    const r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-opus-4-8',max_tokens:1024,system:sys,messages:hist})
+    });
+    if(!r.ok){
+      if(r.status===401)return '🔑 La chiave API non sembra valida. Controllala nelle Impostazioni → AI avanzata.';
+      if(r.status===429)return '⏳ Troppe richieste in questo momento. Riprova tra poco.';
+      return '⚠️ L’AI non risponde (errore '+r.status+'). Le funzioni del menù restano disponibili offline.';
+    }
+    const data=await r.json();
+    const txt=(data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').trim();
+    return txt? txt.replace(/\n/g,'\n') : 'Non ho una risposta in questo momento, riprova.';
+  }catch(e){
+    return '📡 Niente connessione: l’AI avanzata richiede internet. Posso comunque gestire menù, spesa, ricette, diario e peso anche offline!';
+  }
+}
+function coachSystemPrompt(){
+  let p='Sei l’AI coach nutrizionale dell’app "Macro AI". Rispondi in italiano, in modo amichevole, conciso e pratico. ';
+  p+='Sei un assistente per alimentazione, allenamento e benessere generale: puoi rispondere anche a domande libere. ';
+  p+='Non sei un medico: per problemi clinici consiglia di rivolgersi a un professionista. ';
+  if(S){
+    p+=`\n\nProfilo utente: nome ${S.name||'utente'}, ${S.trainingDays} allenamenti/settimana, ${S.meals} pasti al giorno. `;
+    p+=`Macro allenamento P${S.macros.train.p} C${S.macros.train.c} G${S.macros.train.f} (${kcalFromMacros(S.macros.train.p,S.macros.train.c,S.macros.train.f)} kcal); `;
+    p+=`riposo P${S.macros.rest.p} C${S.macros.rest.c} G${S.macros.rest.f}. `;
+    if(S.allergies)p+=`Allergie/intolleranze: ${S.allergies}. `;
+    if(S.dislikes)p+=`Cibi non graditi: ${S.dislikes}. `;
+    if(S.cheat&&S.cheat.enabled)p+=`Pasto sgarro: ${DAYS[S.cheat.day]} (${S.cheat.desc||'libero'}). `;
+  }
+  p+='\n\nL’app sa già fare da sola (suggeriscilo se pertinente): rigenerare menù, cambiare alimenti, lista della spesa, ricette anche per friggitrice ad aria, diario alimentare, grafico del peso, calcolatore macro, scarica/stampa. ';
+  p+='Tu non puoi premere i pulsanti: se serve un’azione, spiega all’utente cosa scrivere o dove toccare. Mantieni le risposte brevi (massimo ~150 parole) salvo richiesta esplicita.';
+  return p;
 }
 
 // parser: trova giorno e pasto citati
@@ -1293,23 +1548,50 @@ function coachReply(raw){
     if(/oggi/.test(t)){regenDay(curDay);go('menu');return '🔄 Giorno rigenerato!';}
     regenAll();go('menu');return '🔁 Ho rigenerato il menù settimanale rispettando i tuoi macro!';
   }
-  // CAMBIA SINGOLO ALIMENTO citato
-  for(const f of DB){if(t.includes(f.n.toLowerCase())){
-    // trova dove sta nel menù e suggerisci alternative
-    const alts=allowed(f.cat).filter(a=>a.n!==f.n).slice(0,3).map(a=>a.n);
-    return `Vuoi cambiare <b>${f.n}</b>? 👀 Apri la scheda Menù e tocca ✏️ accanto all’alimento: ti propongo alternative come <b>${alts.join(', ')}</b> e, se non ti vanno, puoi cercare un prodotto e riadatto in automatico gli altri alimenti per centrare i macro.`;
-  }}
+  // CAMBIA SINGOLO ALIMENTO citato — solo se c'è intenzione di sostituzione
+  if(/cambi|sostitu|modific|alternativ|al posto|invece d|non voglio/.test(t)){
+    for(const f of DB){if(t.includes(f.n.toLowerCase())){
+      const alts=allowed(f.cat).filter(a=>a.n!==f.n).slice(0,3).map(a=>a.n);
+      return `Vuoi cambiare <b>${f.n}</b>? 👀 Apri la scheda Menù e tocca ✏️ accanto all’alimento: ti propongo alternative come <b>${alts.join(', ')}</b> e, se non ti vanno, puoi cercare un prodotto e riadatto in automatico gli altri alimenti per centrare i macro.`;
+    }}
+  }
 
   // MACRO / INFO
   if(/macro|calorie|kcal|quanto|obiettiv/.test(t)){const tg=dayTarget(curDay);const g=dayMacros(curDay);return `📊 Oggi (${DAYS[curDay]} — ${tg.label}):\n<b>Obiettivo:</b> ${kcalFromMacros(tg.p,tg.c,tg.f)}kcal · P${tg.p} C${tg.c} G${tg.f}\n<b>Nel menù:</b> ${g.k}kcal · P${g.p} C${g.c} G${g.f}\n\nLe calorie le calcolo sempre in automatico dai macro!`;}
   if(/sgarro|cheat|pasto liber/.test(t)){if(S.cheat.enabled)return `🍕 Il tuo pasto sgarro è <b>${DAYS[S.cheat.day]}</b> (${S.mealNames[S.cheat.mealIndex]}): ${S.cheat.desc||'pasto libero'}. È solo quel pasto e conto comunque i macro (P${S.cheat.p} C${S.cheat.c} G${S.cheat.f}). Puoi modificarlo dalla scheda Menù o dalle Impostazioni.`;return 'Al momento non hai un pasto sgarro impostato. Puoi attivarlo dalle Impostazioni ⚙️ e scegliere giorno, pasto e di cosa è fatto!';}
   if(/calcola.*macro|non so.*macro|quanti.*dovrei|stima.*macro|aiuto.*macro/.test(t)){openMacroCalc('settings');return '🧮 Apro il calcolatore: con pochi dati (peso, altezza, età, attività, obiettivo) stimo i tuoi macro. Poi premi Salva!';}
   if(/acqua|bere|idrataz/.test(t)){go('menu');return '💧 Trovi il tracker dell’acqua in alto nella scheda Menù (giorno di oggi): tocca + ogni bicchiere da 250 ml. Obiettivo 2 L!';}
+  if(/\bdiario\b|ho mangiato|registra.*pasto|cosa ho mangiato|tracci/.test(t)){go('diario');return '📔 Ti ho aperto il <b>Diario</b>: qui registri cosa mangi e vedi i macro rimanenti della giornata. Sul Menù puoi toccare <b>✓ Mangiato</b> per aggiungere un pasto al volo!';}
+  if(/\bpeso\b|peserm|quanto peso|pesata|dimagri.*track|media.*peso/.test(t)){go('diario');const wk=weeklyWeight(todayKey());return '⚖️ Apri il Diario per segnare il peso del giorno.'+(wk?` La tua media di questa settimana è <b>${wk.avg} kg</b> (${wk.n} pesate).`:' Aggiungi qualche pesata e calcolo la media settimanale automaticamente.');}
   if(/impostazion|settings|profilo|modifica.*macro|cambia.*macro/.test(t)){openSettings();return '⚙️ Ti ho aperto le Impostazioni: qui puoi cambiare macro, pasti, sgarro, allergie e cibi che non ti piacciono. Tutto ciò che hai impostato all’inizio!';}
-  if(/aiuto|help|cosa puoi|come funzion/.test(t))return 'Ecco cosa posso fare per te 🤖:\n• <b>“rigenera lunedì / la cena / la settimana”</b>\n• <b>“non mi piace il tofu”</b> → lo tolgo da tutto\n• <b>“sono allergico al lattosio”</b>\n• <b>“più proteine” / “meno carboidrati”</b>\n• <b>“lista della spesa”</b>\n• <b>“ricette friggitrice ad aria”</b>\n• <b>“scarica/stampa il menù”</b>\nProva pure!';
+  if(/aiuto|help|cosa puoi|come funzion/.test(t))return 'Ecco cosa posso fare per te 🤖:\n• <b>“rigenera lunedì / la cena / la settimana”</b>\n• <b>“non mi piace il tofu”</b> → lo tolgo da tutto\n• <b>“sono allergico al lattosio”</b>\n• <b>“più proteine” / “meno carboidrati”</b>\n• <b>“lista della spesa”</b> · <b>“ricette friggitrice ad aria”</b>\n• <b>“scarica/stampa il menù”</b> · <b>“segna il peso”</b>\n• Domande di nutrizione (proteine, carboidrati, digiuno, integratori…)\nProva pure!';
 
-  // fallback
-  return `Non sono sicuro di aver capito 🤔. Posso: rigenerare pasti/giorni/settimana, cambiare alimenti, gestire allergie e cibi non graditi, fare la lista della spesa, suggerire ricette (anche friggitrice ad aria) e far scaricare/stampare il menù.\nProva ad esempio: <b>“rigenera la cena di oggi”</b> o <b>“lista della spesa”</b>.`;
+  // BASE DI CONOSCENZA NUTRIZIONALE (offline)
+  const kb=nutritionKB(t);
+  if(kb)return kb;
+
+  // non gestito localmente → l'AI avanzata (se attiva) risponderà
+  return null;
+}
+
+// risposte nutrizionali offline su domande frequenti
+function nutritionKB(t){
+  if(/quante? protein|fabbisogno protei|grammi.*protein/.test(t))return '🥩 Per chi si allena, in genere si consigliano <b>1,6–2,2 g di proteine per kg</b> di peso al giorno, distribuite tra i pasti. Fonti ottime: pollo, tacchino, pesce, uova, albume, yogurt greco, legumi, tofu. Le tue le trovi nelle Impostazioni e le rispetto nel menù!';
+  if(/cosa.*(carboidrat|carbo)|a cosa servono.*carbo|perché.*carbo/.test(t))return '🍚 I <b>carboidrati</b> sono la principale fonte di energia, utili soprattutto attorno all’allenamento. Meglio fonti integrali e a basso indice: riso, avena, patate dolci, legumi, frutta. 4 kcal per grammo.';
+  if(/cosa.*grass|a cosa servono.*grass|perché.*grass/.test(t))return '🥑 I <b>grassi</b> servono a ormoni e assorbimento delle vitamine. Privilegia quelli “buoni”: olio EVO, avocado, frutta secca, pesce azzurro. Sono densi: 9 kcal per grammo, quindi attenzione alle quantità.';
+  if(/perdere peso|dimagri|deficit|perdere grasso|definizione/.test(t))return '📉 Per dimagrire serve un <b>deficit calorico</b> moderato (circa 300–500 kcal sotto il mantenimento), proteine alte per preservare i muscoli, e costanza. Usa il <b>calcolatore macro</b> con obiettivo “Dimagrire” e segui il menù — traccia il peso nel Diario per vedere l’andamento!';
+  if(/aumentare massa|mettere massa|massa muscolare|bulk|crescere/.test(t))return '💪 Per aumentare massa: leggero <b>surplus calorico</b> (+10%), proteine 1,8–2,2 g/kg, carboidrati adeguati attorno all’allenamento e allenamento progressivo. Imposta l’obiettivo “Aumentare massa” nel calcolatore macro.';
+  if(/pre.?(workout|allenament)|prima.*allena|cosa mangiare prima/.test(t))return '⏱️ <b>Prima dell’allenamento</b> (1–2 h): carboidrati + un po’ di proteine, pochi grassi e fibre per digerire bene. Es: riso e pollo, oppure pane e bresaola, o avena e yogurt.';
+  if(/post.?(workout|allenament)|dopo.*allena|cosa mangiare dopo/.test(t))return '🔁 <b>Dopo l’allenamento</b>: proteine (20–40 g) + carboidrati per recuperare. Es: pollo e riso, o yogurt greco e frutta. Non serve l’“finestra anabolica” stretta: conta il totale giornaliero.';
+  if(/digiuno intermittente|intermittent|16.?8|salt.*colazione/.test(t))return '🕑 Il <b>digiuno intermittente</b> (es. 16/8) è solo un modo di distribuire i pasti: funziona se ti aiuta a rispettare i macro, ma non è magico. Conta sempre il totale giornaliero. Puoi impostare meno pasti nelle Impostazioni.';
+  if(/creatina/.test(t))return '🔬 La <b>creatina monoidrato</b> (3–5 g al giorno) è tra gli integratori più studiati: aiuta forza e performance. Va presa con costanza, l’orario non è cruciale. (Consiglio generale, non medico.)';
+  if(/proteine in polvere|whey|proteine del siero|integratore.*protein/.test(t))return '🥤 Le <b>proteine in polvere</b> (whey o vegetali) sono solo un modo comodo per arrivare al fabbisogno proteico: non obbligatorie se lo raggiungi col cibo. Utili nello spuntino o post-workout.';
+  if(/fibr/.test(t))return '🌾 Le <b>fibre</b> (verdura, frutta, legumi, integrali) migliorano digestione e sazietà. Obiettivo indicativo 25–30 g al giorno. Nel menù inserisco sempre verdura e fonti integrali.';
+  if(/zuccher/.test(t))return '🍬 Meglio limitare gli <b>zuccheri aggiunti</b>, ma quelli della frutta vanno benissimo. Rientrano comunque nei carboidrati: se ci stanno nei tuoi macro, va bene anche un dolce ogni tanto (vedi pasto sgarro!).';
+  if(/alcol|alcool|birra|vino/.test(t))return '🍷 L’<b>alcol</b> dà 7 kcal/g, non nutre e può rallentare recupero e definizione. Se lo bevi, conteggialo (puoi usare la “voce rapida” nel Diario) e tienilo occasionale.';
+  if(/quanta acqua|quanto bere|litri.*acqua/.test(t))return '💧 Indicativamente <b>30–35 ml per kg</b> di peso al giorno (di più se ti alleni o fa caldo). Trovi il tracker dell’acqua nel Menù con obiettivo 2 L.';
+  if(/quante.*calorie|fabbisogno calor|quante kcal/.test(t))return '🔢 Non ti chiedo le calorie: le <b>calcolo dai macro</b> (4 kcal/g per proteine e carboidrati, 9 kcal/g per i grassi). Se non conosci i tuoi, usa il <b>calcolatore macro</b> nelle Impostazioni.';
+  return null;
 }
 
 /* ============================================================
@@ -1353,6 +1635,17 @@ function renderSettings(){
   h+=`<div class="card"><h2>⚠️ Allergie</h2><label class="fld" style="margin:0"><textarea id="st_alg" placeholder="Scrivi liberamente">${d.allergies||''}</textarea></label></div>`;
   h+=`<div class="card"><h2>🙅 Cibi che non mi piacciono</h2><label class="fld" style="margin:0"><textarea id="st_dis" placeholder="Scrivi liberamente">${d.dislikes||''}</textarea></label></div>`;
 
+  // AI avanzata (opzionale)
+  const hasKey=!!localStorage.getItem('macroai_key');
+  h+=`<div class="card"><h2>🤖 AI avanzata (opzionale)</h2>
+    <div class="sub">Fa rispondere il Coach a <b>qualsiasi</b> domanda in linguaggio libero usando il modello Claude. Richiede internet e una tua chiave API Anthropic. Il coach base (menù, spesa, ricette, diario, peso, domande di nutrizione) funziona sempre, anche offline e senza chiave.</div>
+    <div class="toggle"><span class="tlab">Attiva AI avanzata</span><div class="sw ${d.aiEnabled?'on':''}" id="st_ai" onclick="this.classList.toggle('on')"></div></div>
+    <label class="fld"><span class="lab">Chiave API Anthropic <span class="hint">(salvata solo sul tuo telefono)</span></span>
+      <input type="password" id="st_key" placeholder="${hasKey?'•••••••• (già salvata)':'sk-ant-...'}" autocomplete="off"></label>
+    <div class="note">🔒 La chiave resta in locale e viene usata solo per parlare con Claude. La ottieni da <b>console.anthropic.com</b>. L’uso ha un piccolo costo a tuo carico, a consumo.</div>
+    ${hasKey?`<button class="btn ghost sm" style="width:100%;margin-top:10px" onclick="if(confirm('Rimuovere la chiave API salvata?')){localStorage.removeItem('macroai_key');toast('Chiave rimossa');renderSettings();}">🗑️ Rimuovi chiave salvata</button>`:''}
+  </div>`;
+
   h+=`<button class="btn" onclick="saveSettings()">💾 Salva e rigenera menù</button>
     <button class="btn ghost" style="margin-top:10px" onclick="go('menu')">Annulla</button>
     <button class="btn danger" style="margin:18px 0 30px" onclick="resetAll()">↩️ Rifai il questionario iniziale</button>`;
@@ -1378,6 +1671,10 @@ function saveSettings(){
   S.cheat.f=+document.getElementById('st_chf').value||0;
   S.allergies=document.getElementById('st_alg').value.trim();
   S.dislikes=document.getElementById('st_dis').value.trim();
+  // AI avanzata
+  S.aiEnabled=document.getElementById('st_ai').classList.contains('on');
+  const keyIn=document.getElementById('st_key').value.trim();
+  if(keyIn)localStorage.setItem('macroai_key',keyIn);
   save();generateWeek();go('menu');toast('Impostazioni salvate · menù rigenerato ✅');
 }
 function resetAll(){if(confirm('Vuoi rifare il questionario iniziale? Le impostazioni attuali verranno usate come base.')){startOnboarding(S);}}
